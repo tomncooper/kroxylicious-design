@@ -105,6 +105,25 @@ interface Principal {
 @Retention(RUNTIME) @Target(TYPE)
 @interface SingularPrincipal { }
 
+// Shared validation utility. Both the existing and new Subject delegate their
+// constructor uniqueness checks here. Uses one-level meta-annotation scanning
+// so that types annotated with @Unique (which carries @SingularPrincipal as a
+// meta-annotation) are recognised without this module importing @Unique.
+// Deprecated at birth: at 1.0, the meta-annotation scanning will no longer be
+// needed and this validation should be inlined into Subject directly.
+/** @deprecated Transitional utility. Will be removed at 1.0. */
+@Deprecated(since = "0.x.0", forRemoval = true)
+final class SingularPrincipals {
+    static boolean isSingular(Class<?> type) {
+        // Returns true if type is annotated with @SingularPrincipal directly,
+        // or if any of its annotations are themselves annotated with @SingularPrincipal.
+    }
+    static void validateUniqueness(Set<? extends Principal> principals) {
+        // Groups principals by class, throws IllegalArgumentException if any
+        // singular principal type has more than one instance.
+    }
+}
+
 // Bridge interface: both the existing and new Subject implement this,
 // allowing either to be passed to Authorizer.authorize().
 /** @deprecated Use {@link Subject} directly. Will be removed at 1.0. */
@@ -112,8 +131,9 @@ interface Principal {
 interface Identity {
     Set<? extends Principal> principals();
     default <P extends Principal> Optional<P> uniquePrincipalOfType(Class<P> type) {
-        // Throws IllegalArgumentException if type does not carry @SingularPrincipal.
-        // Does NOT check the old @Unique annotation.
+        // Uses SingularPrincipals.isSingular() to accept types annotated with
+        // @SingularPrincipal directly or via meta-annotation (e.g. @Unique).
+        // Throws IllegalArgumentException if the type is not a singular principal type.
         // Returns the single principal of the given type, or empty if none.
     }
     default <P extends Principal> Set<P> allPrincipalsOfType(Class<P> type) { ... }
@@ -126,8 +146,8 @@ interface Identity {
 // are not inherited. Subject.anonymous() must exist before Identity is removed in 1.0.
 record Subject(Set<? extends Principal> principals) implements Identity {
     Subject {
-        // Validates that at most one principal of each @SingularPrincipal-annotated
-        // type is present. Throws IllegalArgumentException on violation.
+        // Delegates to SingularPrincipals.validateUniqueness() to validate that
+        // at most one principal of each singular type is present.
     }
     static Subject anonymous() { ... }
 }
@@ -147,7 +167,9 @@ interface Principal extends io.kroxylicious.identity.Principal {
 /** @deprecated Use {@link io.kroxylicious.identity.Subject} instead. */
 @Deprecated(since = "0.x.0", forRemoval = true)
 record Subject(Set<Principal> principals) implements Identity {
-    // Constructor continues to validate @Unique (not the new @SingularPrincipal).
+    // Constructor delegates to SingularPrincipals.validateUniqueness(),
+    // the same shared utility used by the new Subject.
+    // Both @Unique and @SingularPrincipal are recognised via the utility.
 
     // The methods below originally had bounds <P extends old.Principal>.
     // Identity's defaults have bounds <P extends new.Principal>.
@@ -158,14 +180,17 @@ record Subject(Set<Principal> principals) implements Identity {
     // new.Principal, any type that satisfied the old bound also satisfies
     // the new one, so callers are unaffected.
 
-    // Overrides still check @Unique (not the new @SingularPrincipal), 
-    // matching the constructor's validation.
+    // Override uses SingularPrincipals.isSingular(), accepting types
+    // annotated with either @Unique or @SingularPrincipal.
     @Override <P extends io.kroxylicious.identity.Principal> Optional<P> uniquePrincipalOfType(Class<P> type) { ... }
     @Override <P extends io.kroxylicious.identity.Principal> Set<P> allPrincipalsOfType(Class<P> type) { ... }
 }
 
 /** @deprecated Use {@link io.kroxylicious.identity.SingularPrincipal} instead. */
 @Deprecated(since = "0.x.0", forRemoval = true)
+@SingularPrincipal // Meta-annotation: allows the new module's SingularPrincipals
+                   // utility to recognise @Unique-annotated types via a one-level
+                   // meta-annotation scan, without importing @Unique.
 @interface Unique { }
 ```
 
@@ -207,6 +232,7 @@ Compatible changes (no action required):
 - Adding `implements Identity` to the existing `Subject` record and widening type parameter bounds
 - Introducing `kroxylicious-identity-api` as a new module
 - `kroxylicious-identity-api` must be added to `bannedDependencies` allowlists in relevant parent POMs
+- `PrincipalEntityNameMapper` in the entity isolation filter switches from checking `@Unique` directly to using `SingularPrincipals.isSingular()`, widening acceptance to `@SingularPrincipal`-annotated types
 
 All other modules (including those that use `FilterContext.authenticatedSubject()` or `RouterContext.authenticatedSubject()`) require no source changes.
 These modules will see compile-time deprecation warnings for usages of the existing `Subject`, `Principal` and `@Unique`, visible to developers during builds but not to end users.
@@ -221,6 +247,8 @@ In `kroxylicious-identity-api`:
 package io.kroxylicious.identity;
 
 // Identity interface: removed (bridge no longer needed)
+// SingularPrincipals utility: removed (meta-annotation scanning no longer needed,
+//     uniqueness validation inlined into Subject)
 ```
 
 In `kroxylicious-api`:
